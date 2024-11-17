@@ -6,6 +6,8 @@ import threading
 import redis
 from pymongo import MongoClient
 import csv
+from datetime import datetime
+import json
 
 
 def add_order_to_stream(order_id, st_code, quant):
@@ -20,9 +22,8 @@ def add_order_to_stream(order_id, st_code, quant):
 
 
 def get_orders(start_time):
-    invoice_date_str = start_time['InvoiceDate']
 
-    start_time = datetime.strptime(invoice_date_str, '%m/%d/%Y %H:%M')
+    #start_time = datetime.strptime(invoice_date_str, '%m/%d/%Y %H:%M')
     end_time = start_time + timedelta(minutes=10)
 
     query = {
@@ -45,14 +46,17 @@ def order_webhook_creation(orders_collection):
         next(csv_reader)
 
         for row in csv_reader:
+            date_string = row[4]
 
+            # Convert the string to a datetime object
+            date_object = datetime.strptime(date_string, '%m/%d/%Y %H:%M')
             map =  {
                 "order_id": row[0],
                 "StockCode":row[1],
                 "Description": row[2],
                 "Quantity": int(row[3]),
-                "InvoiceDate": row[4],
-                "UnitPrice": float(row[5]),
+                "InvoiceDate": date_object,
+                "UnitPrice": row[5],
                 "CustomerID": row[6],
                 "Country": row[7]
             }
@@ -118,13 +122,17 @@ def decrement_stock(stock_code, quantity):
 
     current_quantity = int(current_quantity)
     new_quantity = current_quantity - quantity
-    r.set(oms_stock_code, new_quantity)
+    if current_quantity <= 0:
+        print("No stock left. Alert sent. order cancelled\n")
+    else:
+        r.set(oms_stock_code, new_quantity)
+        print(
+            f"Stock for OMSStockCode {oms_stock_code} decremented. New quantity: {new_quantity}\n")
 
     threshold = int(r.get(f"{stock_code}_threshold") or 0)
     if new_quantity < threshold:
-        r.publish("low-stock", f"OMSStockCode {oms_stock_code} has low stock: {new_quantity}")
+        r.publish("low-stock", f"OMSStockCode {oms_stock_code} has low stock: {current_quantity}")
 
-    print(f"Stock for OMSStockCode {oms_stock_code} decremented. New quantity: {new_quantity}\n")
 
 
 def process_orders_from_stream(r):
@@ -238,6 +246,12 @@ def was_order_completed(order_id, day_of_month):
 
 if __name__ == '__main__':
 
+
+    progress_path = "progress.json"
+    with open(progress_path, 'r') as json_file:
+        loaded_state = json.load(json_file)
+        start_time = datetime.strptime(loaded_state['start_time'], '%Y-%m-%d %H:%M:%S')
+
     listener_thread = threading.Thread(target=listen_for_low_stock, daemon=True)
     listener_thread.start()
 
@@ -249,11 +263,11 @@ if __name__ == '__main__':
     #order_webhook_creation(orders_collection)
     #stockCode_to_OMSStockCode_map()
 
-    start_time = orders_collection.find_one({}, {"InvoiceDate": 1})
 
 
-    while start_time:
-        orders, next_start_time = get_orders(start_time)
+    count = 0
+    while count < 3:
+        orders, start_time = get_orders(start_time)
 
         if not orders:
             break
@@ -266,9 +280,18 @@ if __name__ == '__main__':
             add_order_to_sorted_set(stock_code, quantity)
 
         process_orders_from_stream(r)
-        start_time = {"InvoiceDate": next_start_time.strftime('%m/%d/%Y %H:%M')}
+        count = count + 1
+
+        #start_time = {"InvoiceDate": next_start_time.strftime('%m/%d/%Y %H:%M')}
 
     get_top_ordered_items()
+
+    current_state = { "start_time": str(start_time)}
+
+    with open('progress.json', 'w') as json_file:
+        json.dump(current_state, json_file)
+
+
 
     # Updating stocks
 
