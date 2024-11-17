@@ -58,7 +58,8 @@ def order_webhook_creation(orders_collection):
                 "InvoiceDate": date_object,
                 "UnitPrice": row[5],
                 "CustomerID": row[6],
-                "Country": row[7]
+                "Country": row[7],
+                "Status" : "Created"
             }
             final.append(map)
 
@@ -79,7 +80,16 @@ def stockCode_to_OMSStockCode_map():
     for value in unique_values:
         r.set(value, master)
         r.set(master,100)
+        marketplace_list = [value, value + "_amazon", value + "_ebay",
+                            value + "_temu", value + "_shopify"]
+        r.lpush(f"{master}_master", *marketplace_list)
         master = master + 1
+
+
+
+
+
+
 
 
 def send_alert(oms_stock_code, new_quantity):
@@ -104,7 +114,11 @@ def listen_for_low_stock():
             print(f"Alert: {message['data'].decode()} \n")
 
 
-def decrement_stock(stock_code, quantity):
+def decrement_stock(stock_code, quantity,time):
+
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
 
     r = redis.Redis(host='localhost', port=6379, db=0)
     oms_stock_code = r.get(stock_code)
@@ -124,18 +138,36 @@ def decrement_stock(stock_code, quantity):
     new_quantity = current_quantity - quantity
     if current_quantity <= 0:
         print("No stock left. Alert sent. order cancelled\n")
+        orders_collection.update_one({"StockCode": stock_code}, {"$set": {"Status": "Cancelled"}})
     else:
         r.set(oms_stock_code, new_quantity)
         print(
             f"Stock for OMSStockCode {oms_stock_code} decremented. New quantity: {new_quantity}\n")
+        orders_collection.update_one({"StockCode": stock_code}, {"$set": {"Status": "Completed"}})
+        send_inventory_updates(oms_stock_code, new_quantity,time)
+
 
     threshold = int(r.get(f"{stock_code}_threshold") or 0)
     if new_quantity < threshold:
         r.publish("low-stock", f"OMSStockCode {oms_stock_code} has low stock: {current_quantity}")
 
 
+def send_inventory_updates(oms_stock_code, new_quantity,time):
+    r = redis.Redis(host='localhost', port=6379, db=0)
+    marketplace_list = r.lrange(f"{oms_stock_code}_master", 0, -1)
 
-def process_orders_from_stream(r):
+    marketplace_inventory_updates = []
+    for marketplace in marketplace_list:
+        inventory_update = {"StockCode": str(marketplace), "Quantity": new_quantity,"UpdateTime":str(time)}
+        marketplace_inventory_updates.append(inventory_update)
+
+    with open('invntory_updates.json', 'a') as file:
+        for item in marketplace_inventory_updates:
+            json.dump(item, file)
+            file.write('\n')
+
+
+def process_orders_from_stream(r,time):
     last_id = '0'  # Starting point to read from the beginning of the stream
     running = True  # Flag to control the loop
 
@@ -161,7 +193,7 @@ def process_orders_from_stream(r):
                 print(f"Processing order {order_id}: {quantity} units of {stock_code}")
 
                 # Process the order (e.g., update stock, send alerts, etc.)
-                decrement_stock(stock_code, quantity)
+                decrement_stock(stock_code, quantity,time)
 
                 # Update the last processed ID
                 last_id = message_id
@@ -279,7 +311,7 @@ if __name__ == '__main__':
             add_order_to_stream(order["order_id"], stock_code, quantity)
             add_order_to_sorted_set(stock_code, quantity)
 
-        process_orders_from_stream(r)
+        process_orders_from_stream(r, start_time)
         count = count + 1
 
         #start_time = {"InvoiceDate": next_start_time.strftime('%m/%d/%Y %H:%M')}
