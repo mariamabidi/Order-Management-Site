@@ -233,6 +233,9 @@ def was_order_completed(order_id, day_of_month):
 
 
 
+
+
+
 if __name__ == '__main__':
 
     listener_thread = threading.Thread(target=listen_for_low_stock, daemon=True)
@@ -243,7 +246,8 @@ if __name__ == '__main__':
     orders_collection = db['ORDER_WEBHOOKS']
     r = redis.Redis(host='localhost', port=6379, db=0)
 
-    stockCode_to_OMSStockCode_map()
+    #order_webhook_creation(orders_collection)
+    #stockCode_to_OMSStockCode_map()
 
     start_time = orders_collection.find_one({}, {"InvoiceDate": 1})
 
