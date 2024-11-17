@@ -1,14 +1,25 @@
+import signal
 import smtplib
 from datetime import timedelta, datetime
 from email.mime.text import MIMEText
-
+import threading
 import redis
 from pymongo import MongoClient
 import csv
 
 
-def get_orders(start_time):
+def add_order_to_stream(order_id, st_code, quant):
+    event_data = {
+        "order_id": order_id,
+        "stock_code": st_code,
+        "quantity": quant
+    }
+    # Append the event to the "orders" stream
+    r.xadd("orders", event_data)
+    print(f"Order {order_id} added to stream.")
 
+
+def get_orders(start_time):
     invoice_date_str = start_time['InvoiceDate']
 
     start_time = datetime.strptime(invoice_date_str, '%m/%d/%Y %H:%M')
@@ -86,7 +97,7 @@ def listen_for_low_stock():
     pubsub.subscribe("low-stock")
     for message in pubsub.listen():
         if message['type'] == 'message':
-            print(f"Alert: {message['data'].decode()}")
+            print(f"Alert: {message['data'].decode()} \n")
 
 
 def decrement_stock(stock_code, quantity):
@@ -111,15 +122,121 @@ def decrement_stock(stock_code, quantity):
 
     threshold = int(r.get(f"{stock_code}_threshold") or 0)
     if new_quantity < threshold:
-        # send_alert(oms_stock_code, new_quantity)
         r.publish("low-stock", f"OMSStockCode {oms_stock_code} has low stock: {new_quantity}")
-        listen_for_low_stock()
 
     print(f"Stock for OMSStockCode {oms_stock_code} decremented. New quantity: {new_quantity}\n")
 
 
+def process_orders_from_stream(r):
+    last_id = '0'  # Starting point to read from the beginning of the stream
+    running = True  # Flag to control the loop
+
+    def handle_exit_signal(signal_number, frame):
+        nonlocal running
+        running = False
+        print("\nGraceful shutdown initiated...")
+
+
+    while running:
+        # Read new entries from the stream with a timeout to periodically check the running flag
+        events = r.xread({"orders": last_id}, block=1000)  # Block for 1000 milliseconds (1 second)
+
+        if not events:  # If no new events are found, continue the loop
+            handle_exit_signal(signal.SIGINT, None)
+
+        for stream, messages in events:
+            for message_id, message_data in messages:
+                order_id = message_data[b"order_id"].decode()
+                stock_code = message_data[b"stock_code"].decode()
+                quantity = int(message_data[b"quantity"])
+
+                print(f"Processing order {order_id}: {quantity} units of {stock_code}")
+
+                # Process the order (e.g., update stock, send alerts, etc.)
+                decrement_stock(stock_code, quantity)
+
+                # Update the last processed ID
+                last_id = message_id
+
+    print("Stopped processing orders.")
+
+
+def add_order_to_sorted_set(stock_code, quantity):
+    # Increment the score of the item in the "top_orders" sorted set
+    r.zincrby("top_orders", quantity, stock_code)
+
+
+def get_top_ordered_items(n=10):
+    # Retrieve the top n items from the sorted set
+    top_items = r.zrevrange("top_orders", 0, n - 1, withscores=True)
+    print("Top ordered items:")
+    for item, score in top_items:
+        print(f"Stock Code: {item.decode()}, Orders: {int(score)}")
+    return top_items
+
+
+def track_stock_update(stock_code, day_of_month):
+    """
+    Track stock updates for a stock item on a specific day.
+    stock_code: Stock item code (e.g., 'A123')
+    day_of_month: Day of the month (1-31)
+    """
+    # Bitmap key is stock code, bit position corresponds to the day of the month
+    bitmap_key = f"stock_update:{stock_code}"
+
+    # Use BITSET to set the bit for the given day
+    r.setbit(bitmap_key, day_of_month - 1, 1)  # day_of_month - 1 because bit positions start from 0
+
+    print(f"Stock update for {stock_code} on Day {day_of_month} marked as processed.")
+
+
+# Helper function to check if stock was updated on a specific day
+def was_stock_updated(stock_code, day_of_month):
+    """
+    Check if a stock item was updated on a specific day.
+    stock_code: Stock item code (e.g., 'A123')
+    day_of_month: Day of the month (1-31)
+    """
+    bitmap_key = f"stock_update:{stock_code}"
+
+    # Use BITGET to check if the bit for the specific day is set to 1
+    updated = r.getbit(bitmap_key, day_of_month - 1)  # day_of_month - 1 to match bit positions
+
+    if updated:
+        print(f"Stock {stock_code} was updated on Day {day_of_month}.")
+        return True
+    else:
+        print(f"Stock {stock_code} was NOT updated on Day {day_of_month}.")
+        return False
+
+
+def track_order_completion(order_id, day_of_month):
+    """
+    Track order completion status for a specific order ID on a specific day.
+    """
+    bitmap_key = f"order_completion:{order_id}"
+    r.setbit(bitmap_key, day_of_month - 1, 1)  # Mark as completed on the given day
+    print(f"Order {order_id} completed on Day {day_of_month}.")
+
+def was_order_completed(order_id, day_of_month):
+    """
+    Check if an order was completed on a specific day.
+    """
+    bitmap_key = f"order_completion:{order_id}"
+    completed = r.getbit(bitmap_key, day_of_month - 1)
+    if completed:
+        print(f"Order {order_id} was completed on Day {day_of_month}.")
+        return True
+    else:
+        print(f"Order {order_id} was NOT completed on Day {day_of_month}.")
+        return False
+
+
 
 if __name__ == '__main__':
+
+    listener_thread = threading.Thread(target=listen_for_low_stock, daemon=True)
+    listener_thread.start()
 
     client = MongoClient('mongodb://localhost:27017/')
     db = client['DBSI']
@@ -141,8 +258,14 @@ if __name__ == '__main__':
             stock_code = order["StockCode"]
             quantity = order["Quantity"]
             r.set(f"{stock_code}_threshold", 70)
-            decrement_stock(stock_code, quantity)
+            add_order_to_stream(order["order_id"], stock_code, quantity)
+            add_order_to_sorted_set(stock_code, quantity)
 
+        process_orders_from_stream(r)
         start_time = {"InvoiceDate": next_start_time.strftime('%m/%d/%Y %H:%M')}
+
+    get_top_ordered_items()
+
+    # Updating stocks
 
 
