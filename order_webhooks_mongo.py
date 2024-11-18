@@ -76,6 +76,11 @@ def order_webhook_creation(orders_collection):
 
 def get_orders(start_time):
 
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS_MONGO']
+    current_stock = db['QUANTITY']
+
     #start_time = datetime.strptime(invoice_date_str, '%m/%d/%Y %H:%M')
     end_time = start_time + timedelta(minutes=10)
 
@@ -157,8 +162,10 @@ def process_orders(order_list,start_time):
                 print("Order "+order["order_id"]+" completed successfully.")
                 send_newQuantity(oms_code["oms"], stock_now_quantity - order["quantity"], start_time)
 
-if __name__ == '__main__':
 
+
+
+def main():
 
     progress_path = "progress.json"
     with open(progress_path, 'r') as json_file:
@@ -172,8 +179,8 @@ if __name__ == '__main__':
     orders_collection = db['ORDER_WEBHOOKS_MONGO']
     current_stock = db['QUANTITY']
 
-    #order_webhook_creation(orders_collection)
-    #stockCode_to_OMSStockCode_map()
+    order_webhook_creation(orders_collection)
+    stockCode_to_OMSStockCode_map()
 
     count = 0
     order_list = []
@@ -199,3 +206,10 @@ if __name__ == '__main__':
 
     with open('progress.json', 'w') as json_file:
         json.dump(current_state, json_file)
+
+
+if __name__ == '__main__':
+
+    main()
+
+
