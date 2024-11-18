@@ -11,6 +11,10 @@ import json
 
 
 def add_order_to_stream(order_id, st_code, quant):
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
+    r = redis.Redis(host='localhost', port=6379, db=0)
     event_data = {
         "order_id": order_id,
         "stock_code": st_code,
@@ -22,6 +26,12 @@ def add_order_to_stream(order_id, st_code, quant):
 
 
 def get_orders(start_time):
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    r = redis.Redis(host='localhost', port=6379, db=0)
+
+    orders_collection = db['ORDER_WEBHOOKS']
+
 
     #start_time = datetime.strptime(invoice_date_str, '%m/%d/%Y %H:%M')
     end_time = start_time + timedelta(minutes=10)
@@ -39,6 +49,11 @@ def get_orders(start_time):
 
 
 def order_webhook_creation(orders_collection):
+
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
+    r = redis.Redis(host='localhost', port=6379, db=0)
 
     final = []
     with open('data.csv', mode='r', encoding='ISO-8859-1') as file:
@@ -202,11 +217,20 @@ def process_orders_from_stream(r,time):
 
 
 def add_order_to_sorted_set(stock_code, quantity):
+
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
+    r = redis.Redis(host='localhost', port=6379, db=0)
     # Increment the score of the item in the "top_orders" sorted set
     r.zincrby("top_orders", quantity, stock_code)
 
 
 def get_top_ordered_items(n=10):
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
+    r = redis.Redis(host='localhost', port=6379, db=0)
     # Retrieve the top n items from the sorted set
     top_items = r.zrevrange("top_orders", 0, n - 1, withscores=True)
     print("Top ordered items:")
@@ -222,6 +246,10 @@ def track_stock_update(stock_code, day_of_month):
     day_of_month: Day of the month (1-31)
     """
     # Bitmap key is stock code, bit position corresponds to the day of the month
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
+    r = redis.Redis(host='localhost', port=6379, db=0)
     bitmap_key = f"stock_update:{stock_code}"
 
     # Use BITSET to set the bit for the given day
@@ -237,6 +265,10 @@ def was_stock_updated(stock_code, day_of_month):
     stock_code: Stock item code (e.g., 'A123')
     day_of_month: Day of the month (1-31)
     """
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
+    r = redis.Redis(host='localhost', port=6379, db=0)
     bitmap_key = f"stock_update:{stock_code}"
 
     # Use BITGET to check if the bit for the specific day is set to 1
@@ -254,6 +286,10 @@ def track_order_completion(order_id, day_of_month):
     """
     Track order completion status for a specific order ID on a specific day.
     """
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
+    r = redis.Redis(host='localhost', port=6379, db=0)
     bitmap_key = f"order_completion:{order_id}"
     r.setbit(bitmap_key, day_of_month - 1, 1)  # Mark as completed on the given day
     print(f"Order {order_id} completed on Day {day_of_month}.")
@@ -262,6 +298,10 @@ def was_order_completed(order_id, day_of_month):
     """
     Check if an order was completed on a specific day.
     """
+    client = MongoClient('mongodb://localhost:27017/')
+    db = client['DBSI']
+    orders_collection = db['ORDER_WEBHOOKS']
+    r = redis.Redis(host='localhost', port=6379, db=0)
     bitmap_key = f"order_completion:{order_id}"
     completed = r.getbit(bitmap_key, day_of_month - 1)
     if completed:
@@ -272,13 +312,7 @@ def was_order_completed(order_id, day_of_month):
         return False
 
 
-
-
-
-
-if __name__ == '__main__':
-
-
+def main():
     progress_path = "progress.json"
     with open(progress_path, 'r') as json_file:
         loaded_state = json.load(json_file)
@@ -292,8 +326,8 @@ if __name__ == '__main__':
     orders_collection = db['ORDER_WEBHOOKS']
     r = redis.Redis(host='localhost', port=6379, db=0)
 
-    #order_webhook_creation(orders_collection)
-    #stockCode_to_OMSStockCode_map()
+    order_webhook_creation(orders_collection)
+    stockCode_to_OMSStockCode_map()
 
 
 
@@ -322,6 +356,16 @@ if __name__ == '__main__':
 
     with open('progress.json', 'w') as json_file:
         json.dump(current_state, json_file)
+
+
+
+
+
+if __name__ == '__main__':
+    main()
+
+
+
 
 
 
