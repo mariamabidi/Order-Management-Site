@@ -16,5 +16,5 @@ Technologies Used
  - Python: Backend logic, including inventory updates and alerting mechanisms.
 
 Contributions
-Mariam Abidi: Managed Redis Streams, order tracking, and analytics.
-Suhas Vittal: Handled inventory uploads, stock updates and state management.
+ - Mariam Abidi: Managed Redis Streams, order tracking, and analytics.
+ - Suhas Vittal: Handled inventory uploads, stock updates and state management.
